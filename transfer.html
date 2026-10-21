@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="css/style.css">
   <title>Transfer Form · RTV Inventory Tracker</title>
+  <style>
+    .bulk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+    .bulk-grid label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:#334155}
+    .bulk-grid input{width:100%}
+    .bulk-note{font-size:12px;color:#64748b;margin:4px 0 12px}
+    .bulk-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+  </style>
 </head>
 <body>
   <header id="nav"></header>
@@ -35,7 +42,7 @@
     </section>
 
     <section class="card">
-      <h2>Step 3 · Assets <small id="cnt"></small></h2>
+      <h2>Step 3 · Serialized assets <small id="cnt"></small></h2>
       <div class="add">
         <input id="aid" list="ids" autocomplete="off"
                placeholder="Asset ID — paste several separated by spaces or commas">
@@ -43,6 +50,21 @@
         <button id="add">+ Add</button>
       </div>
       <div class="tw"><table id="tbl"></table></div>
+    </section>
+
+
+    <section class="card">
+      <h2>Step 3b · Non-serialized items <small>(bags, chargers, tags, extensions)</small></h2>
+      <p class="bulk-note">Enter the quantity for each item type being moved in this batch. Leave blank or 0 to skip. Uses the same transfer details (type, destination, holder, activity, reason) from Step 2.</p>
+      <div class="bulk-grid">
+        <label>Bags<input id="b_bag" type="number" min="0" step="1" placeholder="0"></label>
+        <label>Chargers<input id="b_charger" type="number" min="0" step="1" placeholder="0"></label>
+        <label>Tags<input id="b_tag" type="number" min="0" step="1" placeholder="0"></label>
+        <label>Extensions<input id="b_ext" type="number" min="0" step="1" placeholder="0"></label>
+      </div>
+      <div class="bulk-actions">
+        <button id="submitBulk" class="ghost">Submit non-serialized only</button>
+      </div>
     </section>
 
     <section class="card">
@@ -57,6 +79,28 @@
   <script src="js/app.js"></script>
   <script>
     (async()=>{
+    
+      function ensureLogo(){
+        const nav=document.getElementById("nav"); if(!nav) return;
+        if(nav.querySelector("img.logo, a.brand img")) return;
+        let brand=nav.querySelector("a.brand,.brand");
+        if(!brand){
+          brand=document.createElement("a");
+          brand.className="brand"; brand.href="dashboard.html";
+          brand.style.cssText="display:flex;align-items:center;gap:10px;text-decoration:none;";
+          nav.prepend(brand);
+        }
+        if(!brand.querySelector("img")){
+          const img=document.createElement("img");
+          img.src="img/logo.png"; img.alt="Raising The Village"; img.className="logo";
+          img.style.cssText="height:34px;width:auto;display:block;";
+          brand.prepend(img);
+        }
+      }
+      ensureLogo();
+      const navEl=document.getElementById("nav");
+      if(navEl) new MutationObserver(ensureLogo).observe(navEl,{childList:true,subtree:true});
+
       const me=await guard("transfer"),val=i=>$(i).value.trim(),res=$("#res"),MAX=50;
       $("#who").textContent=me.email+" ("+me.role+")";
 
@@ -120,33 +164,126 @@
       $("#aid").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();add()}};
       ["#type","#dest","#holder"].forEach(s=>{$(s).oninput=render;$(s).onchange=render});
 
+      
+      function readDetails(){
+        if(!["admin","operator"].includes(me.role))throw new Error("Your role ("+me.role+") cannot record movements.");
+        const t=val("#type");
+        if(!t)throw new Error("Select a movement type");
+        if(t!=="LOST"&&!val("#dest"))throw new Error("Select a destination");
+        if(val("#yes").toUpperCase()!=="YES")throw new Error("Type YES in Confirm");
+        return {
+          type:t,
+          dest:val("#dest")||null,
+          holder:val("#holder")||null,
+          activity:val("#act")||null,
+          reason:val("#reason")||null
+        };
+      }
+
+      
+      const bulkEls={BAG:"#b_bag",CHARGER:"#b_charger",TAG:"#b_tag",EXTENSION:"#b_ext"};
+      function readBulk(){
+        const out=[];
+        for(const[type,sel]of Object.entries(bulkEls)){
+          const raw=$(sel).value.trim();
+          if(!raw)continue;
+          const n=parseInt(raw,10);
+          if(!Number.isFinite(n)||n<0)throw new Error("Invalid quantity for "+type+".");
+          if(n===0)continue;
+          out.push({item_type:type,quantity:n});
+        }
+        return out;
+      }
+      function clearBulk(){Object.values(bulkEls).forEach(s=>$(s).value="")}
+
+      async function submitBulkItems(details,bulk){
+        const payload=bulk.map(b=>({
+          item_type:b.item_type,
+          movement_type:details.type,
+          quantity:b.quantity,
+          from_location:null,
+          to_location:details.type==="LOST"?"LOST":details.dest,
+          from_holder:null,
+          to_holder:details.holder,
+          activity:details.activity,
+          reason:details.reason,
+          recorded_by:me.email,
+          recorded_by_email:me.email
+        }));
+        
+        const {data,error}=await sb.rpc("log_bulk_movements",{p_items:payload});
+        if(!error)return {count:data?.count??payload.length,batch:data?.batch_id??null};
+        // RPC missing? try direct insert
+        const ins=await sb.from("bulk_items").insert(payload).select("batch_id");
+        if(ins.error)throw new Error("Bulk items not saved: "+ins.error.message+
+          " — admin must create the bulk_items table / log_bulk_movements RPC.");
+        const batches=new Set((ins.data||[]).map(r=>r.batch_id));
+        return {count:(ins.data||[]).length,batch:[...batches][0]||null};
+      }
+
+      $("#submitBulk").onclick=async()=>{
+        if(busy)return;
+        try{
+          const details=readDetails();
+          const bulk=readBulk();
+          if(!bulk.length)throw new Error("Enter a quantity for at least one non-serialized item.");
+          busy=true;$("#submitBulk").disabled=true;
+          out("Submitting "+bulk.length+" bulk item line(s)…",true);
+          const r=await submitBulkItems(details,bulk);
+          clearBulk();$("#yes").value="";
+          out("Submitted "+r.count+" non-serialized item(s)."+(r.batch?" Batch "+r.batch+".":""),true);
+        }catch(e){
+          out("Bulk submit failed: "+(e.message||e));
+        }finally{
+          busy=false;$("#submitBulk").disabled=false;
+        }
+      };
+
+     
       $("#submit").onclick=async()=>{
         if(busy)return;
         try{
-          if(!["admin","operator"].includes(me.role))throw new Error("Your role ("+me.role+") cannot record movements.");
-          const t=val("#type");
-          if(!t)throw new Error("Select a movement type");
-          if(t!=="LOST"&&!val("#dest"))throw new Error("Select a destination");
-          if(val("#yes").toUpperCase()!=="YES")throw new Error("Type YES in Confirm");
-          if(!ids.length)throw new Error("Add at least one Asset ID");
-          for(const id of ids){const c=check(id);if(c!=="Ready")throw new Error(id+" is not ready: "+c)}
+          const details=readDetails();
+          const bulk=readBulk();
+          if(!ids.length&&!bulk.length)throw new Error("Add at least one Asset ID or non-serialized quantity.");
+          if(ids.length){
+            for(const id of ids){const c=check(id);if(c!=="Ready")throw new Error(id+" is not ready: "+c)}
+          }
 
           busy=true;$("#submit").disabled=true;
-          out("Submitting "+ids.length+" movement(s)…",true);
+          const msgs=[];
+          let hadError=false;
 
-          const{data,error}=await sb.rpc("log_movements",{
-            p_asset_ids:ids.map(i=>A.get(i).asset_id),
-            p_type:t,
-            p_to_location:val("#dest")||null,
-            p_to_holder:val("#holder")||null,
-            p_activity:val("#act")||null,
-            p_reason:val("#reason")||null
-          });
-          if(error)throw error;
-          const done=ids.join(", ");
-          ids=[];$("#yes").value="";
-          out(" Submitted "+data.count+" movement(s) for "+done+". Batch "+data.batch_id+".",true);
-          try{await loadAssets()}catch(_){}
+
+          if(ids.length){
+            out("Submitting "+ids.length+" movement(s)…",true);
+            const{data,error}=await sb.rpc("log_movements",{
+              p_asset_ids:ids.map(i=>A.get(i).asset_id),
+              p_type:details.type,
+              p_to_location:details.dest,
+              p_to_holder:details.holder,
+              p_activity:details.activity,
+              p_reason:details.reason
+            });
+            if(error){hadError=true;msgs.push("Assets failed: "+error.message)}
+            else{
+              msgs.push("Submitted "+data.count+" asset movement(s). Batch "+data.batch_id+".");
+              ids=[];
+              try{await loadAssets()}catch(_){}
+            }
+          }
+
+         
+          if(bulk.length){
+            try{
+              const r=await submitBulkItems(details,bulk);
+              msgs.push("Submitted "+r.count+" non-serialized item(s)."+(r.batch?" Batch "+r.batch+".":""));
+              clearBulk();
+            }catch(e){hadError=true;msgs.push(e.message)}
+          }
+
+          $("#yes").value="";
+          out(msgs.join(" "),!hadError);
           render();
         }catch(e){
           $("#yes").value="";
