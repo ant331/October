@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="css/style.css">
+  <title>Movement Log · RTV Inventory Tracker</title>
+</head>
+<body>
+  <header id="nav"></header>
+  <main>
+    <h1>Movement Log</h1>
+    <p class="sub">Append-only, hash-chained record of every movement. Newest first.</p>
+    <div id="msg" class="msg" hidden></div>
+
+    <div class="bar">
+      <input id="q" placeholder="Search any column…">
+      <select id="f_movement_type"></select>
+      <select id="f_to_location"></select>
+      <select id="f_activity"></select>
+      <button class="ghost" id="csv">⤓ Export CSV</button>
+    </div>
+
+    <div class="tw"><table id="tbl"></table></div>
+    <div class="pg" id="pg"></div>
+  </main>
+
+  <script src="vendor/supabase.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    (async()=>{
+      await guard("movements");
+      try{
+        const rows=await all("movements",[["moved_at",false],["id",false]]);
+        const sh=v=>v?`<span class="mono" title="${esc(v)}">${esc(String(v).slice(0,8))}…</span>`:"";
+        const link=v=>`<a href="movements.html?q=${encodeURIComponent(v)}">${esc(v)}</a>`;
+        const pre=new URLSearchParams(location.search).get("q");
+        if(pre)$("#q").value=pre;
+
+        view({rows,file:"movement-log.csv",
+          sel:[["movement_type","Type"],["to_location","To"],["activity","Activity"]],
+          cols:[
+            ["id","ID"],
+            ["moved_at","Moved at (UTC)",v=>esc(v?String(v).slice(0,19).replace("T"," "):"")],
+            ["asset_id","Asset ID",link],
+            ["movement_type","Type",v=>`<span class="b t-${esc(String(v).replace(/\s/g,""))}">${esc(v)}</span>`],
+            ["from_location","From"],
+            ["to_location","To"],
+            ["from_holder","From holder"],
+            ["to_holder","To holder"],
+            ["activity","Activity"],
+            ["reason","Reason"],
+            ["recorded_by","Recorded by"],
+            ["batch_id","Batch",sh],
+            ["row_hash","Row hash",sh]
+          ]});
+      }catch(e){say($("#msg"),"Could not load data: "+(e.message||e))}
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="css/style.css">
+  <title>Dashboard · RTV Inventory Tracker</title>
+</head>
+<body>
+  <header id="nav"></header>
+  <main>
+    <h1>Asset Movement Dashboard</h1>
+    <p class="sub" id="sub">Live operational view</p>
+    <div id="msg" class="msg" hidden></div>
+
+    <section class="kpis">
+      <div class="kpi"><b>Total assets</b><span id="k1" class="skel">—</span></div>
+      <div class="kpi"><b>Movements recorded</b><span id="k2" class="skel">—</span></div>
+      <div class="kpi"><b>Total transfers</b><span id="k3" class="skel">—</span></div>
+      <div class="kpi"><b>Current locations</b><span id="k4" class="skel">—</span></div>
+    </section>
+
+    <section class="status" id="st"></section>
+
+    <section class="charts">
+      <div class="card cbox"><canvas id="c1"></canvas></div>
+      <div class="card cbox"><canvas id="c2"></canvas></div>
+      <div class="card cbox"><canvas id="c3"></canvas></div>
+      <div class="card cbox"><canvas id="c4"></canvas></div>
+    </section>
+  </main>
+
+  <script src="vendor/chart.umd.js"></script>
+  <script src="vendor/supabase.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    (async()=>{
+      await guard("dashboard");
+      try{
+        const[A,M]=await Promise.all([
+          all("assets",[["asset_id",true]]),
+          all("movements",[["moved_at",false],["id",false]])
+        ]);
+        const cnt=(arr,f)=>{const m=new Map();for(const x of arr){const k=f(x);if(k)m.set(k,(m.get(k)||0)+1)}return m};
+        const top=(m,n)=>[...m].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0]))).slice(0,n);
+        const loc=cnt(A,a=>a.current_location),st=cnt(A,a=>a.status);
+
+        ["#k1","#k2","#k3","#k4"].forEach(id=>$("#"+id.slice(1)).classList.remove("skel"));
+        $("#k1").textContent=A.length;
+        $("#k2").textContent=M.length;
+        $("#k3").textContent=M.filter(r=>r.movement_type==="TRANSFER").length;
+        $("#k4").textContent=loc.size;
+
+        // status pills — colour-coded by name
+        $("#st").innerHTML=RTV.status.map(s=>{
+          const slug=String(s).replace(/\s/g,"");
+          return `<div class="kpi"><b>${esc(s.toUpperCase())}</b><span>${st.get(s)||0}</span></div>`;
+        }).join("");
+
+        if(M.length)$("#sub").textContent="Live operational view · latest movement "+
+          String(M[0].moved_at).slice(0,19).replace("T"," ")+" UTC";
+
+        const act=new Map(),lab=new Map();
+        for(const r of M){const a=(r.activity||"").trim();if(!a)continue;const k=a.toLowerCase();if(!lab.has(k))lab.set(k,a);act.set(k,(act.get(k)||0)+1)}
+
+        const BRAND="#2E5299",BRAND2="#4a6db5";
+        const bars=(id,title,rows,horiz)=>new Chart($("#"+id),{type:"bar",
+          data:{labels:rows.map(r=>r[0]),datasets:[{data:rows.map(r=>r[1]),backgroundColor:BRAND,hoverBackgroundColor:BRAND2,borderRadius:6,maxBarThickness:34}]},
+          options:{responsive:true,maintainAspectRatio:false,indexAxis:horiz?"y":"x",
+            plugins:{legend:{display:false},title:{display:true,text:title,color:"#0f172a",font:{size:14,weight:"600"},padding:{bottom:14}}},
+            scales:{[horiz?"x":"y"]:{beginAtZero:true,ticks:{precision:0,color:"#64748b"},grid:{color:"#eef2f7"}},
+                    [horiz?"y":"x"]:{ticks:{autoSkip:false,color:"#475569"},grid:{display:false}}}}});
+
+        bars("c1","Assets with the Most Transfers",top(cnt(M.filter(r=>r.movement_type==="TRANSFER"),r=>r.asset_id),10),true);
+        bars("c2","Movements by Activity",[...act].map(([k,v])=>[lab.get(k),v]).sort((a,b)=>b[1]-a[1]),false);
+        bars("c3","Top 10 Locations by Asset Count",top(loc,10),true);
+        bars("c4","Asset Activity per Month",[...cnt(M,r=>r.moved_at&&String(r.moved_at).slice(0,7))].sort((a,b)=>a[0].localeCompare(b[0])),false);
+      }catch(e){say($("#msg"),"Could not load data: "+(e.message||e))}
+    })();
+  </script>
+</body>
+</html>

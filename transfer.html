@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="css/style.css">
+  <title>Transfer Form · RTV Inventory Tracker</title>
+</head>
+<body>
+  <header id="nav"></header>
+  <main>
+    <h1>Record inventory transfer</h1>
+    <p class="sub">Every movement is saved to Supabase in one batch and the asset records are updated automatically.</p>
+    <div id="msg" class="msg" hidden></div>
+
+    <section class="card">
+      <h2>Step 1 · Identify yourself</h2>
+      <p style="margin:0">
+        Recorded by <b id="who">…</b>. Your verified sign-in email is stored on every movement.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>Step 2 · Transfer details <small>(apply to every tablet below)</small></h2>
+      <div class="grid">
+        <label>Movement type<select id="type"></select></label>
+        <label>Destination location<select id="dest"></select>
+          <small>For LOST the destination defaults to LOST.</small>
+        </label>
+        <label>New holder / user<input id="holder" maxlength="120" autocomplete="off"></label>
+        <label>Activity<select id="act"></select></label>
+        <label class="wide">Reason / reference<input id="reason" maxlength="300" autocomplete="off"></label>
+        <label>Confirm<input id="yes" autocomplete="off" placeholder="Type YES to allow submission"></label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Step 3 · Assets <small id="cnt"></small></h2>
+      <div class="add">
+        <input id="aid" list="ids" autocomplete="off"
+               placeholder="Asset ID — paste several separated by spaces or commas">
+        <datalist id="ids"></datalist>
+        <button id="add">+ Add</button>
+      </div>
+      <div class="tw"><table id="tbl"></table></div>
+    </section>
+
+    <section class="card">
+      <h2>Step 4 · Review & submit</h2>
+      <div id="res" class="msg">Nothing submitted yet.</div>
+      <button id="submit">Submit transfer</button>
+    </section>
+  </main>
+
+  <script src="vendor/supabase.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    (async()=>{
+      const me=await guard("transfer"),val=i=>$(i).value.trim(),res=$("#res"),MAX=50;
+      $("#who").textContent=me.email+" ("+me.role+")";
+
+      let A=new Map(),ids=[],busy=false;
+      const opts=(a,blank)=>(blank?'<option value="">— select —</option>':"")+a.map(v=>`<option>${esc(v)}</option>`).join("");
+      const out=(t,ok)=>{res.className="msg "+(ok?"ok":"bad");res.textContent=t};
+
+      async function loadAssets(){
+        A=new Map((await all("assets",[["asset_id",true]])).map(a=>[a.asset_id.toUpperCase(),a]));
+        $("#ids").innerHTML=[...A.values()].map(a=>`<option value="${esc(a.asset_id)}">`).join("");
+      }
+
+      try{
+        const lo=await sb.from("locations").select("name").order("name");if(lo.error)throw lo.error;
+        $("#type").innerHTML=opts(RTV.types);
+        $("#dest").innerHTML=opts(lo.data.map(r=>r.name),true);
+        $("#act").innerHTML='<option value=""></option>'+opts(RTV.acts);
+        await loadAssets();
+      }catch(e){say($("#msg"),"Could not load data: "+(e.message||e));return}
+
+      function check(id){
+        const a=A.get(id);if(!a)return"Unknown asset";
+        const t=val("#type"),d=val("#dest"),h=val("#holder");
+        if(t!=="LOST"&&!d)return"Pick destination";
+        if(t==="TRANSFER"&&a.current_location===d&&(!h||h===(a.current_holder||"")))return"Already at destination";
+        return"Ready";
+      }
+
+      function render(){
+        const rows=ids.map((id,i)=>{
+          const a=A.get(id),c=check(id);
+          return`<tr>
+            <td>${i+1}</td>
+            <td><b>${esc(a?a.asset_id:id)}</b></td>
+            <td>${esc(a?a.current_location:"?")}</td>
+            <td>${esc(a?a.current_holder||"":"?")}</td>
+            <td><span class="b ${c==="Ready"?"ok":"no"}">${esc(c)}</span></td>
+            <td><button class="x" data-i="${i}" title="Remove">×</button></td>
+          </tr>`;
+        }).join("");
+        $("#tbl").innerHTML=
+          "<thead><tr><th>#</th><th>Asset ID</th><th>Current location</th><th>Current holder</th><th>Check</th><th></th></tr></thead>"+
+          "<tbody>"+(rows||'<tr><td colspan="6" class="empty">No assets added yet — paste Asset IDs above</td></tr>')+"</tbody>";
+        $("#cnt").textContent=`(${ids.length} of ${MAX})`;
+        document.querySelectorAll("button.x").forEach(b=>b.onclick=()=>{ids.splice(+b.dataset.i,1);render()});
+      }
+
+      function add(){
+        let dup=0;
+        for(const p of $("#aid").value.toUpperCase().split(/[\s,;]+/).filter(Boolean)){
+          if(ids.includes(p)){dup++;continue}
+          if(ids.length>=MAX){out("Maximum "+MAX+" assets per submission.");break}
+          ids.push(p);
+        }
+        $("#aid").value="";
+        if(dup)out(dup+" duplicate ID(s) ignored.");
+        render();
+      }
+
+      $("#add").onclick=add;
+      $("#aid").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();add()}};
+      ["#type","#dest","#holder"].forEach(s=>{$(s).oninput=render;$(s).onchange=render});
+
+      $("#submit").onclick=async()=>{
+        if(busy)return;
+        try{
+          if(!["admin","operator"].includes(me.role))throw new Error("Your role ("+me.role+") cannot record movements.");
+          const t=val("#type");
+          if(!t)throw new Error("Select a movement type");
+          if(t!=="LOST"&&!val("#dest"))throw new Error("Select a destination");
+          if(val("#yes").toUpperCase()!=="YES")throw new Error("Type YES in Confirm");
+          if(!ids.length)throw new Error("Add at least one Asset ID");
+          for(const id of ids){const c=check(id);if(c!=="Ready")throw new Error(id+" is not ready: "+c)}
+
+          busy=true;$("#submit").disabled=true;
+          out("Submitting "+ids.length+" movement(s)…",true);
+
+          const{data,error}=await sb.rpc("log_movements",{
+            p_asset_ids:ids.map(i=>A.get(i).asset_id),
+            p_type:t,
+            p_to_location:val("#dest")||null,
+            p_to_holder:val("#holder")||null,
+            p_activity:val("#act")||null,
+            p_reason:val("#reason")||null
+          });
+          if(error)throw error;
+          const done=ids.join(", ");
+          ids=[];$("#yes").value="";
+          out(" Submitted "+data.count+" movement(s) for "+done+". Batch "+data.batch_id+".",true);
+          try{await loadAssets()}catch(_){}
+          render();
+        }catch(e){
+          $("#yes").value="";
+          out("Submit failed: "+(e.message||e));
+        }finally{
+          busy=false;$("#submit").disabled=false;
+        }
+      };
+
+      render();
+    })();
+  </script>
+</body>
+</html>
