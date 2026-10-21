@@ -25,10 +25,30 @@
     <section class="charts">
       <div class="card cbox"><canvas id="c1"></canvas></div>
       <div class="card cbox"><canvas id="c2"></canvas></div>
-      <div class="card cbox"><canvas id="c3"></canvas></div>
+      <div class="card cbox loc-card">
+        <div class="loc-head">
+          <h3>Locations by Asset Count</h3>
+          <input id="locq" placeholder="Search location…" autocomplete="off">
+        </div>
+        <div class="loc-list" id="loclist"></div>
+      </div>
       <div class="card cbox"><canvas id="c4"></canvas></div>
     </section>
   </main>
+
+  <style>
+    .loc-card{display:flex;flex-direction:column;min-height:320px}
+    .loc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+    .loc-head h3{margin:0;font-size:14px;color:#0f172a;font-weight:600}
+    .loc-head input{padding:7px 10px;border:1px solid #d5dbe6;border-radius:8px;font-size:13px;min-width:180px}
+    .loc-list{overflow:auto;flex:1;max-height:280px}
+    .loc-row{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid #eef2f7;font-size:13px}
+    .loc-row:last-child{border-bottom:0}
+    .loc-name{flex:1;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .loc-bar{height:8px;border-radius:6px;background:#2E5299;min-width:4px}
+    .loc-count{min-width:36px;text-align:right;color:#0f172a;font-weight:600}
+    .loc-empty{color:#94a3b8;font-size:13px;padding:16px 0;text-align:center}
+  </style>
 
   <script src="vendor/chart.umd.js"></script>
   <script src="vendor/supabase.js"></script>
@@ -52,7 +72,6 @@
         $("#k3").textContent=M.filter(r=>r.movement_type==="TRANSFER").length;
         $("#k4").textContent=loc.size;
 
-        // status pills — colour-coded by name
         $("#st").innerHTML=RTV.status.map(s=>{
           const slug=String(s).replace(/\s/g,"");
           return `<div class="kpi"><b>${esc(s.toUpperCase())}</b><span>${st.get(s)||0}</span></div>`;
@@ -74,8 +93,25 @@
 
         bars("c1","Assets with the Most Transfers",top(cnt(M.filter(r=>r.movement_type==="TRANSFER"),r=>r.asset_id),10),true);
         bars("c2","Movements by Activity",[...act].map(([k,v])=>[lab.get(k),v]).sort((a,b)=>b[1]-a[1]),false);
-        bars("c3","Top 10 Locations by Asset Count",top(loc,10),true);
         bars("c4","Asset Activity per Month",[...cnt(M,r=>r.moved_at&&String(r.moved_at).slice(0,7))].sort((a,b)=>a[0].localeCompare(b[0])),false);
+
+        // ---- All locations with search (replaces top-10 chart) ----
+        const allLoc=[...loc].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0])));
+        const maxCount=allLoc.length?allLoc[0][1]:1;
+        const list=$("#loclist"), q=$("#locq");
+        function drawLocations(){
+          const term=q.value.trim().toLowerCase();
+          const rows=allLoc.filter(([name])=>!term||String(name).toLowerCase().includes(term));
+          if(!rows.length){list.innerHTML='<div class="loc-empty">No locations match your search.</div>';return}
+          list.innerHTML=rows.map(([name,n])=>`
+            <div class="loc-row" title="${esc(name)} — ${n} asset(s)">
+              <span class="loc-name">${esc(name)}</span>
+              <span class="loc-bar" style="width:${Math.max(4,Math.round((n/maxCount)*120))}px"></span>
+              <span class="loc-count">${n}</span>
+            </div>`).join("");
+        }
+        q.oninput=drawLocations;
+        drawLocations();
       }catch(e){say($("#msg"),"Could not load data: "+(e.message||e))}
     })();
   </script>
