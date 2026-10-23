@@ -13,11 +13,29 @@
     <p class="sub" id="sub">Live operational view</p>
     <div id="msg" class="msg" hidden></div>
 
+    <!-- ===== Serialized asset KPIs ===== -->
     <section class="kpis">
       <div class="kpi"><b>Total assets</b><span id="k1" class="skel">—</span></div>
       <div class="kpi"><b>Movements recorded</b><span id="k2" class="skel">—</span></div>
       <div class="kpi"><b>Total transfers</b><span id="k3" class="skel">—</span></div>
       <div class="kpi"><b>Current locations</b><span id="k4" class="skel">—</span></div>
+    </section>
+
+    <!-- ===== Non-serialized KPIs ===== -->
+    <section class="kpis" style="margin-top:14px">
+      <div class="kpi"><b>Bags</b><span id="k5" class="skel">—</span></div>
+      <div class="kpi"><b>Chargers</b><span id="k6" class="skel">—</span></div>
+      <div class="kpi"><b>Tags</b><span id="k7" class="skel">—</span></div>
+      <div class="kpi"><b>Extensions</b><span id="k8" class="skel">—</span></div>
+    </section>
+
+    <!-- ===== Pending approvals ===== -->
+    <section class="kpis" style="margin-top:14px">
+      <div class="kpi">
+        <b>My pending approvals</b>
+        <span id="k9" class="skel">—</span>
+        <a href="approvals.html" style="font-size:11px;color:#2E5299;text-decoration:none">View →</a>
+      </div>
     </section>
 
     <section class="status" id="st"></section>
@@ -54,24 +72,52 @@
   <script src="vendor/supabase.js"></script>
   <script src="js/config.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/notif.js"></script>
   <script>
     (async()=>{
-      await guard("dashboard");
+      const me = await guard("dashboard");
       try{
-        const[A,M]=await Promise.all([
+        const [A,M,B] = await Promise.all([
           all("assets",[["asset_id",true]]),
-          all("movements",[["moved_at",false],["id",false]])
+          all("movements",[["moved_at",false],["id",false]]),
+          all("bulk_items",[["id",true]])
         ]);
+
+        // Count my pending approvals (destined to me as approver)
+        const pendingRes = await sb.from("pending_transfers")
+          .select("id",{count:"exact",head:true})
+          .eq("approver_email",(me.email||"").toLowerCase())
+          .eq("status","PENDING");
+
         const cnt=(arr,f)=>{const m=new Map();for(const x of arr){const k=f(x);if(k)m.set(k,(m.get(k)||0)+1)}return m};
         const top=(m,n)=>[...m].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0]))).slice(0,n);
         const loc=cnt(A,a=>a.current_location),st=cnt(A,a=>a.status);
 
-        ["#k1","#k2","#k3","#k4"].forEach(id=>$("#"+id.slice(1)).classList.remove("skel"));
+        // Remove skeleton shimmer
+        ["k1","k2","k3","k4","k5","k6","k7","k8","k9"]
+          .forEach(id=>$("#"+id).classList.remove("skel"));
+
+        // Serialized KPIs
         $("#k1").textContent=A.length;
         $("#k2").textContent=M.length;
         $("#k3").textContent=M.filter(r=>r.movement_type==="TRANSFER").length;
         $("#k4").textContent=loc.size;
 
+        // Non-serialized totals
+        const bulkTotals={};
+        for(const r of B){
+          const t=String(r.item_type||"").toUpperCase();
+          bulkTotals[t]=(bulkTotals[t]||0)+(Number(r.quantity)||0);
+        }
+        $("#k5").textContent=bulkTotals["BAG"]||0;
+        $("#k6").textContent=bulkTotals["CHARGER"]||0;
+        $("#k7").textContent=bulkTotals["TAG"]||0;
+        $("#k8").textContent=bulkTotals["EXTENSION"]||0;
+
+        // Pending approvals count
+        $("#k9").textContent = pendingRes.error ? 0 : (pendingRes.count ?? 0);
+
+        // Status pills
         $("#st").innerHTML=RTV.status.map(s=>{
           const slug=String(s).replace(/\s/g,"");
           return `<div class="kpi"><b>${esc(s.toUpperCase())}</b><span>${st.get(s)||0}</span></div>`;
@@ -91,11 +137,15 @@
             scales:{[horiz?"x":"y"]:{beginAtZero:true,ticks:{precision:0,color:"#64748b"},grid:{color:"#eef2f7"}},
                     [horiz?"y":"x"]:{ticks:{autoSkip:false,color:"#475569"},grid:{display:false}}}}});
 
-        bars("c1","Assets with the Most Transfers",top(cnt(M.filter(r=>r.movement_type==="TRANSFER"),r=>r.asset_id),10),true);
-        bars("c2","Movements by Activity",[...act].map(([k,v])=>[lab.get(k),v]).sort((a,b)=>b[1]-a[1]),false);
-        bars("c4","Asset Activity per Month",[...cnt(M,r=>r.moved_at&&String(r.moved_at).slice(0,7))].sort((a,b)=>a[0].localeCompare(b[0])),false);
+        bars("c1","Assets with the Most Transfers",
+          top(cnt(M.filter(r=>r.movement_type==="TRANSFER"),r=>r.asset_id),10),true);
+        bars("c2","Movements by Activity",
+          [...act].map(([k,v])=>[lab.get(k),v]).sort((a,b)=>b[1]-a[1]),false);
+        bars("c4","Asset Activity per Month",
+          [...cnt(M,r=>r.moved_at&&String(r.moved_at).slice(0,7))]
+            .sort((a,b)=>a[0].localeCompare(b[0])),false);
 
-        // ---- All locations with search (replaces top-10 chart) ----
+        // ---- All locations with search ----
         const allLoc=[...loc].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0])));
         const maxCount=allLoc.length?allLoc[0][1]:1;
         const list=$("#loclist"), q=$("#locq");
