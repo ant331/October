@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="css/style.css">
+  <title>Approvals · RTV Inventory Tracker</title>
+  <style>
+    /* Inline styles for the approvals page specific layout */
+    .tabs{display:flex;gap:4px;background:#eef2f7;padding:4px;border-radius:10px}
+    .tab{background:transparent;border:0;padding:6px 14px;border-radius:8px;cursor:pointer;
+      font-size:13px;color:#334155;font-weight:500}
+    .tab.active{background:#fff;color:#0f172a;box-shadow:0 1px 3px rgba(15,23,42,.08)}
+    .approvals-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;margin-top:14px}
+    .approval{padding:14px}
+    .approval-head{display:flex;justify-content:space-between;align-items:center;gap:8px;
+      flex-wrap:wrap;margin-bottom:10px;font-size:14px}
+    .approval-meta{font-size:11px;color:#64748b}
+    .approval-body{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:10px}
+    .approval-body small{font-size:11px;color:#64748b;display:block}
+    .approval-items{margin-bottom:10px}
+    .approval-items > div{margin-bottom:8px}
+    .approval-items small{font-size:11px;color:#64748b;display:block;margin-bottom:3px}
+    .approval-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:8px;border-top:1px solid #eef2f7}
+    .approval-actions input{flex:1;min-width:140px;padding:8px 10px;border:1px solid #d5dbe6;
+      border-radius:8px;font-size:13px}
+    .approval-decision{font-size:12px;color:#64748b;padding-top:8px;border-top:1px solid #eef2f7}
+    .pill{display:inline-block;background:#eef2f7;color:#334155;font-size:11px;
+      padding:2px 8px;border-radius:999px;margin:1px 3px 1px 0}
+    .b.warn{background:#fef3c7;color:#92400e}
+  </style>
+</head>
+<body>
+  <header id="nav"></header>
+  <main>
+    <h1>Approvals</h1>
+    <p class="sub">Approve incoming transfers for your assigned districts. Approving writes the movement to the asset log.</p>
+    <div id="msg" class="msg" hidden></div>
+
+    <div class="bar">
+      <div class="tabs">
+        <button class="tab active" data-tab="approve">To approve</button>
+        <button class="tab" data-tab="mine">My submissions</button>
+      </div>
+      <select id="f_status">
+        <option value="PENDING">Pending</option>
+        <option value="APPROVED">Approved</option>
+        <option value="REJECTED">Rejected</option>
+        <option value="">All</option>
+      </select>
+      <button class="ghost" id="refresh">↻ Refresh</button>
+    </div>
+
+    <div id="list" class="approvals-list"></div>
+  </main>
+
+  <script src="vendor/supabase.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/notif.js"></script>
+  <script>
+    (async()=>{
+      const me = await guard("approvals");
+      const list = $("#list"), msg = $("#msg");
+      let tab = "approve";
+      let items = [];
+
+      const email = (me.email || "").toLowerCase();
+
+      async function load(){
+        const st = $("#f_status").value;
+        
+        // Let RLS handle the filtering based on user_locations and admin status
+        let q = sb.from("pending_transfers").select("*").order("created_at",{ascending:false});
+        
+        if (tab === "approve") {
+          // Hide own submissions in "To approve" tab so users don't accidentally approve their own
+          q = q.neq("submitted_by", email); 
+        } else {
+          q = q.eq("submitted_by", email);
+        }
+        
+        if (st) q = q.eq("status", st);
+        
+        const { data, error } = await q;
+        if (error){ 
+          say(msg, "Could not load: " + error.message); 
+          return; 
+        }
+        items = data || [];
+        render();
+      }
+
+      function pills(arr, fmt){
+        if (!arr || !arr.length) return "";
+        return arr.map(fmt).join(" ");
+      }
+
+      function render(){
+        if (!items.length){
+          list.innerHTML = '<div class="empty" style="grid-column:1/-1">No transfers match this filter.</div>';
+          return;
+        }
+        
+        list.innerHTML = items.map(r => {
+          const canDecide = tab === "approve" && r.status === "PENDING";
+          const badgeCls = r.status === "APPROVED" ? "ok"
+                        : r.status === "REJECTED" ? "no"
+                        : "warn";
+          return `
+          <div class="card approval">
+            <div class="approval-head">
+              <div>
+                <b>${esc(r.movement_type)}</b> → ${esc(r.to_location || "—")}
+                <span class="b ${badgeCls}">${esc(r.status)}</span>
+              </div>
+              <div class="approval-meta">
+                ${esc(r.submitted_by)} · ${esc(String(r.created_at).slice(0,16).replace("T"," "))} UTC
+              </div>
+            </div>
+            <div class="approval-body">
+              <div><small>Holder</small>${esc(r.to_holder || "—")}</div>
+              <div><small>Activity</small>${esc(r.activity || "—")}</div>
+              <div><small>Reason</small>${esc(r.reason || "—")}</div>
+            </div>
+            <div class="approval-items">
+              ${(r.asset_ids && r.asset_ids.length)
+                ? `<div><small>Serialized (${r.asset_ids.length})</small>${pills(r.asset_ids, id => `<span class="pill">${esc(id)}</span>`)}</div>`
+                : ""}
+              ${(r.bulk_items && r.bulk_items.length)
+                ? `<div><small>Non-serialized</small>${pills(r.bulk_items, b => `<span class="pill">${esc(b.item_type)} ×${b.quantity}</span>`)}</div>`
+                : ""}
+            </div>
+            ${canDecide
+              ? `<div class="approval-actions">
+                   <input id="note-${r.id}" placeholder="Optional note">
+                   <button data-act="approve" data-id="${r.id}">Approve</button>
+                   <button class="ghost" data-act="reject" data-id="${r.id}">Reject</button>
+                 </div>`
+              : `<div class="approval-decision">
+                   ${r.decided_by
+                     ? `Decided by ${esc(r.decided_by)} on ${esc(String(r.decided_at||"").slice(0,16).replace("T"," "))}`
+                     : ""}
+                   ${r.decision_note ? ` — ${esc(r.decision_note)}` : ""}
+                 </div>`}
+          </div>`;
+        }).join("");
+
+        list.querySelectorAll("button[data-act]").forEach(b => {
+          b.onclick = () => decide(b.dataset.id, b.dataset.act);
+        });
+      }
+
+      async function decide(id, act){
+        const note = ($("#note-"+id)?.value || "").trim() || null;
+        const rpc = act === "approve" ? "approve_pending_transfer" : "reject_pending_transfer";
+        const btn = list.querySelector(`button[data-act="${act}"][data-id="${id}"]`);
+        
+        if (btn) btn.disabled = true;
+        const { error } = await sb.rpc(rpc, { p_id: id, p_note: note });
+        
+        if (error){
+          say(msg, "Failed: " + error.message);
+          if (btn) btn.disabled = false;
+          return;
+        }
+        
+        say(msg, act === "approve" ? "Approved and recorded." : "Rejected.", true);
+        await load();
+        if (window.RTVBell) window.RTVBell.updateBadge();
+      }
+
+      // Handle Tab Switching
+      document.querySelectorAll(".tab").forEach(t => {
+        t.onclick = () => {
+          document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+          t.classList.add("active");
+          tab = t.dataset.tab;
+          load();
+        };
+      });
+      
+      $("#f_status").onchange = load;
+      $("#refresh").onclick = load;
+
+      // Deep-link from notification bell: approvals.html?id=...
+      const wanted = new URLSearchParams(location.search).get("id");
+      await load();
+      
+      if (wanted){
+        const el = [...list.querySelectorAll(".approval")].find(el =>
+          el.innerHTML.includes(`note-${wanted}`) || el.querySelector(`button[data-id="${wanted}"]`)
+        );
+        if (el) {
+          el.scrollIntoView({ behavior:"smooth", block:"center" });
+          el.style.boxShadow = "0 0 0 3px #2E5299";
+          setTimeout(() => el.style.boxShadow = "", 2000);
+        }
+      }
+    })();
+  </script>
+</body>
+</html>
